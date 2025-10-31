@@ -1,11 +1,11 @@
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for, make_response
 from flask_session import Session
-from flask_mysqldb import MySQL
+import pymysql
 from flask import flash
 from flask_cors import CORS
 import requests, base64, cv2, json
 import numpy as np
-import MySQLdb.cursors
+import pymysql.cursors
 import bcrypt
 import re
 from functools import wraps
@@ -30,46 +30,53 @@ app.config["SESSION_TYPE"] = "filesystem"
 app.config["SESSION_PERMANENT"] = False
 Session(app)
 
-# ---------------------------  
-# 🗄️ DATABASE CONFIG (Railway-compatible)
 # ---------------------------
-app.config['MYSQL_HOST'] = os.getenv('MYSQL_HOST', 'localhost')
-app.config['MYSQL_USER'] = os.getenv('MYSQL_USER', 'root')
-app.config['MYSQL_PASSWORD'] = os.getenv('MYSQL_PASSWORD', '')
-app.config['MYSQL_DB'] = os.getenv('MYSQL_DB', 'pinoyluto_db')
-mysql = MySQL(app)
+# 🗄️ DATABASE CONFIG (Railway-compatible with PyMySQL)
+# ---------------------------
+db_config = {
+    'host': os.getenv('MYSQL_HOST', 'localhost'),
+    'user': os.getenv('MYSQL_USER', 'root'),
+    'password': os.getenv('MYSQL_PASSWORD', ''),
+    'database': os.getenv('MYSQL_DB', 'pinoyluto_db'),
+    'cursorclass': pymysql.cursors.DictCursor
+}
 
 # ---------------------------
 # 🗄️ DATABASE MIGRATION (Run on first deploy)
 # ---------------------------
+def get_db_connection():
+    return pymysql.connect(**db_config)
+
 def init_db():
     try:
-        with open('pinoyluto_db_railway.sql', 'r', encoding='utf-8') as f:
-            sql_script = f.read()
+        connection = get_db_connection()
+        with connection.cursor() as cursor:
+            with open('pinoyluto_db_railway.sql', 'r', encoding='utf-8') as f:
+                sql_script = f.read()
 
-        cursor = mysql.connection.cursor()
-        # Split by semicolon and execute each statement
-        statements = [stmt.strip() for stmt in sql_script.split(';') if stmt.strip() and not stmt.strip().startswith('--')]
-        for statement in statements:
-            if statement:
-                cursor.execute(statement)
+            # Split by semicolon and execute each statement
+            statements = [stmt.strip() for stmt in sql_script.split(';') if stmt.strip() and not stmt.strip().startswith('--')]
+            for statement in statements:
+                if statement:
+                    cursor.execute(statement)
 
-        mysql.connection.commit()
-        cursor.close()
+            connection.commit()
         print("Database initialized successfully!")
     except Exception as e:
         print(f"Database init error: {e}")
+    finally:
+        connection.close()
 
 # Run migration on app startup (only if tables don't exist)
-with app.app_context():
-    try:
-        cursor = mysql.connection.cursor()
+try:
+    connection = get_db_connection()
+    with connection.cursor() as cursor:
         cursor.execute("SHOW TABLES LIKE 'users'")
         if not cursor.fetchone():
             init_db()
-        cursor.close()
-    except Exception as e:
-        print(f"DB check error: {e}")
+    connection.close()
+except Exception as e:
+    print(f"DB check error: {e}")
 
 # ---------------------------
 # 🔒 LOGIN PROTECTION DECORATOR
@@ -123,7 +130,8 @@ def index():
 @login_required
 def profile():
     user_id = session["id"]
-    cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+    connection = get_db_connection()
+    cursor = connection.cursor()
 
     if request.method == "POST":
         action = request.form.get("action")
